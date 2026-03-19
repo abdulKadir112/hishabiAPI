@@ -7,16 +7,26 @@ const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const app = express();
 
 // Middleware
-app.use(cors());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
+app.use(cors({
+  origin: [
+    'http://localhost:3000',           // Next.js local
+    'http://localhost:5000',           // যদি আলাদা পোর্টে frontend চলে
+    'https://your-nextjs-app.vercel.app', // production frontend domain (পরিবর্তন করুন)
+    '*'                                // dev-এর জন্য temporarily সব allow (পরে restrict করুন)
+  ],
+  methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type'],
+  credentials: true
+}));
 
-// Multer setup - memoryStorage use করো (disk না, কারণ Vercel-এ disk persistent নেই)
-// file buffer-এ রাখবে, পরে Cloudinary বা Vercel Blob-এ upload করতে পারো
-const storage = multer.memoryStorage();  // ★★★ Change here ★★★
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Multer setup (memory storage – Vercel compatible)
+const storage = multer.memoryStorage();
 const upload = multer({
   storage: storage,
-  limits: { fileSize: 5 * 1024 * 1024 },
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
   fileFilter: (req, file, cb) => {
     const allowed = ['.jpg', '.jpeg', '.png', '.webp'];
     if (allowed.includes(path.extname(file.originalname).toLowerCase())) {
@@ -27,39 +37,42 @@ const upload = multer({
   },
 });
 
-// ★★★ Static /uploads serve remove করো বা conditional করো (Vercel-এ কাজ করবে না persistent ভাবে)
-// app.use('/uploads', express.static('uploads'));  → comment out
-
-// MongoDB - cached connection for serverless
+// MongoDB connection (cached for serverless)
 const uri = process.env.MONGODB_URI || "mongodb+srv://ifter:ifter2026@ifter1.e6wwged.mongodb.net/ifterDB?retryWrites=true&w=majority";
 
 let cachedDb = null;
 
 async function connectToDatabase() {
   if (cachedDb) {
+    console.log('Using cached MongoDB connection');
     return cachedDb;
   }
 
-  const client = new MongoClient(uri, {
-    serverApi: {
-      version: ServerApiVersion.v1,
-      strict: true,
-      deprecationErrors: true,
-    },
-  });
+  try {
+    const client = new MongoClient(uri, {
+      serverApi: {
+        version: ServerApiVersion.v1,
+        strict: true,
+        deprecationErrors: true,
+      },
+    });
 
-  await client.connect();
-  console.log('MongoDB connected (cached)');
-  cachedDb = client.db('ifterDB');
-  return cachedDb;
+    await client.connect();
+    console.log('MongoDB connected successfully (new connection)');
+    cachedDb = client.db('ifterDB');
+    return cachedDb;
+  } catch (err) {
+    console.error('MongoDB connection error:', err);
+    throw err;
+  }
 }
 
 // Routes
 app.get('/', (req, res) => {
-  res.send('Server is running 🚀 | Ifter Hisab API (Vercel mode)');
+  res.send('Server is running 🚀 | Ifter Hisab API');
 });
 
-// POST /hishab - file upload example (memory-এ রাখা, URL save করো DB-এ)
+// POST /hishab
 app.post(
   '/hishab',
   upload.fields([
@@ -68,30 +81,37 @@ app.post(
   ]),
   async (req, res) => {
     try {
+      console.log('POST /hishab received');
+      console.log('Body:', req.body);
+      console.log('Files received:', req.files ? Object.keys(req.files) : 'No files');
+
       const db = await connectToDatabase();
       const body = req.body;
       const files = req.files || {};
 
-      // ★★★ File handling: এখানে files.buffer আছে, Cloudinary-এ upload করো (নিচে example)
-      // উদাহরণ: const donorImageUrl = await uploadToCloudinary(files.donorImage?.[0]?.buffer);
-      // এখন dummy URL দিলাম (real-এ change করো)
-      const donorImageUrl = files.donorImage?.[0] ? `https://example.com/uploads/${Date.now()}-donor.jpg` : null;
-      const receiverImageUrl = files.receiverImage?.[0] ? `https://example.com/uploads/${Date.now()}-receiver.jpg` : null;
+      // Dummy URL – পরে Cloudinary / Vercel Blob / ImgBB দিয়ে replace করুন
+      const donorImageUrl = files.donorImage?.[0]
+        ? `https://via.placeholder.com/150?text=${encodeURIComponent(body.donorName || 'Donor')}`
+        : null;
+
+      const receiverImageUrl = files.receiverImage?.[0]
+        ? `https://via.placeholder.com/150?text=${encodeURIComponent(body.receiverName || 'Receiver')}`
+        : null;
 
       const newTransaction = {
-        type: body.type,
-        amount: Number(body.amount),
-        note: body.note?.trim() || body.description?.trim() || '',
-        date: body.date || new Date().toISOString(),
+        type: body.type || 'donation',
+        amount: Number(body.amount) || 0,
+        note: (body.note || body.description || body.reason || '').trim(),
+        date: body.date || new Date().toISOString().split('T')[0],
 
-        donorName: body.donorName?.trim() || '',
-        donorPhone: body.donorPhone?.trim() || '',
-        donorAddress: body.donorAddress?.trim() || '',
+        donorName: (body.donorName || '').trim(),
+        donorPhone: (body.donorPhone || '').trim(),
+        donorAddress: (body.donorAddress || '').trim(),
         donorImage: donorImageUrl,
 
-        receiverName: body.receiverName?.trim() || '',
-        receiverPhone: body.receiverPhone?.trim() || '',
-        receiverAddress: body.receiverAddress?.trim() || '',
+        receiverName: (body.receiverName || '').trim(),
+        receiverPhone: (body.receiverPhone || '').trim(),
+        receiverAddress: (body.receiverAddress || '').trim(),
         receiverImage: receiverImageUrl,
 
         createdAt: new Date(),
@@ -99,14 +119,19 @@ app.post(
 
       const result = await db.collection('hishab').insertOne(newTransaction);
 
-      res.status(201).json({ success: true, insertedId: result.insertedId.toString() });
+      res.status(201).json({
+        success: true,
+        insertedId: result.insertedId.toString(),
+        message: 'Transaction added successfully'
+      });
     } catch (err) {
-      console.error(err);
+      console.error('POST /hishab error:', err);
       res.status(500).json({ success: false, error: err.message });
     }
   }
 );
 
+// GET /hishab
 app.get('/hishab', async (req, res) => {
   try {
     const db = await connectToDatabase();
@@ -118,52 +143,58 @@ app.get('/hishab', async (req, res) => {
     let totalDonation = 0;
     let totalExpense = 0;
 
-    const processedTransactions = transactions.map(t => {
-      const safeAmount = Number(t.amount) || 0;
-
-      if (t.type === 'donation') totalDonation += safeAmount;
-      if (t.type === 'expense') totalExpense += safeAmount;
+    const processed = transactions.map(t => {
+      const amt = Number(t.amount) || 0;
+      if (t.type === 'donation') totalDonation += amt;
+      if (t.type === 'expense') totalExpense += amt;
 
       return {
         ...t,
         _id: t._id.toString(),
         id: t._id.toString(),
-        amount: safeAmount,
-        note: t.note || t.description || '',
-        donorImage: t.donorImage || null,
-        receiverImage: t.receiverImage || null
+        amount: amt,
+        note: t.note || '',
       };
     });
 
-    const netBalance = totalDonation - totalExpense;
-
     res.json({
-      transactions: processedTransactions,
+      transactions: processed,
       totalDonation,
       totalExpense,
-      netBalance
+      netBalance: totalDonation - totalExpense
     });
   } catch (err) {
-    console.error(err);
+    console.error('GET /hishab error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
+// DELETE /hishab/:id
 app.delete('/hishab/:id', async (req, res) => {
   try {
     const db = await connectToDatabase();
-    const { id } = req.params;
-    const result = await db.collection('hishab').deleteOne({ _id: new ObjectId(id) });
+    const result = await db.collection('hishab').deleteOne({ _id: new ObjectId(req.params.id) });
 
     if (result.deletedCount === 0) {
-      return res.status(404).json({ success: false, message: 'Not found' });
+      return res.status(404).json({ success: false, message: 'Transaction not found' });
     }
 
-    res.json({ success: true });
+    res.json({ success: true, message: 'Deleted successfully' });
   } catch (err) {
+    console.error('DELETE error:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// ★★★ Vercel-এর জন্য export করো (app.listen remove)
-module.exports = app;  // বা export default app; যদি ESM use করো
+// Vercel serverless এর জন্য
+module.exports = app;
+
+// লোকাল ডেভেলপমেন্টের জন্য listen (Vercel এ ignore হবে)
+if (require.main === module) {
+  const PORT = process.env.PORT || 5000;
+  app.listen(PORT, () => {
+    console.log(`🚀 Server running on http://localhost:${PORT}`);
+    console.log(`GET  → http://localhost:${PORT}/hishab`);
+    console.log(`POST → http://localhost:${PORT}/hishab`);
+  });
+}
