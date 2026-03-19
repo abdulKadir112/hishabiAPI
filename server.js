@@ -11,7 +11,7 @@ app.use(cors({
   origin: [
     'http://localhost:3000',           // Next.js local
     'http://localhost:5000',           // যদি আলাদা পোর্টে frontend চলে
-    'https://hishabi-api.vercel.app/hishab', // production frontend domain (পরিবর্তন করুন)
+    'https://hishabi-api.vercel.app', // production frontend domain (পরিবর্তন করুন)
     '*'                                // dev-এর জন্য temporarily সব allow (পরে restrict করুন)
   ],
   methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
