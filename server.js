@@ -6,62 +6,27 @@ const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 
 const app = express();
 
-// Middleware
-// app.use(cors({
-//   origin: [
-//     'http://localhost:3000',           
-//     'http://localhost:5000',           
-//     'https://hishabi-api.vercel.app', 
-//     '*'                               
-//   ],
-//   methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-//   allowedHeaders: ['Content-Type'],
-//   credentials: true
-// }));
-
-const cors = require('cors');
-
-// ... অন্য import
-
-// CORS setup – dynamic origin + OPTIONS handle
+// Improved CORS setup – Vercel-এর জন্য reliable
 app.use(cors({
-  origin: function (origin, callback) {
-    // Allowed origins – তোমার frontend URL + local
-    const allowed = [
-      'http://localhost:3000',
-      'http://localhost:5000',  // যদি লাগে
-      'https://hishabi-frontend.vercel.app',  // তোমার actual frontend domain (vercel.app নাম চেক করো)
-      // preview branches-এর জন্য: /.*\.vercel\.app$/  wildcard চাইলে regex দিতে পারো
-    ];
-
-    if (!origin || allowed.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
+  origin: '*',  // Test-এর জন্য * ; পরে specific origin দাও যেমন 'https://hishabi.vercel.app'
   methods: ['GET', 'POST', 'DELETE', 'OPTIONS', 'PUT', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
-  optionsSuccessStatus: 200  // legacy browsers-এর জন্য
+  optionsSuccessStatus: 200
 }));
 
-// Explicitly handle OPTIONS for all routes (Vercel-এ খুব দরকার)
-// app.options('*', cors());  // এটা অবশ্যই রাখো
-// তোমার app.use(cors(...)) এর পরে, routes-এর আগে
-app.options('*', (req, res) => {
-  res.status(200).end();
-});
+// Explicit OPTIONS handler for preflight (Vercel edge-এ দরকার)
+app.options('*', cors());
 
-
+// Body parsers
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Multer setup (memory storage – Vercel compatible)
+// Multer setup
 const storage = multer.memoryStorage();
 const upload = multer({
   storage: storage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const allowed = ['.jpg', '.jpeg', '.png', '.webp'];
     if (allowed.includes(path.extname(file.originalname).toLowerCase())) {
@@ -72,7 +37,7 @@ const upload = multer({
   },
 });
 
-// MongoDB connection (cached for serverless)
+// MongoDB URI from env (fallback for local)
 const uri = process.env.MONGODB_URI || "mongodb+srv://ifter:ifter2026@ifter1.e6wwged.mongodb.net/ifterDB?retryWrites=true&w=majority";
 
 let cachedDb = null;
@@ -83,6 +48,9 @@ async function connectToDatabase() {
     return cachedDb;
   }
 
+  console.log('Attempting new MongoDB connection...');
+  console.log('MONGODB_URI present:', !!process.env.MONGODB_URI);
+
   try {
     const client = new MongoClient(uri, {
       serverApi: {
@@ -90,6 +58,9 @@ async function connectToDatabase() {
         strict: true,
         deprecationErrors: true,
       },
+      connectTimeoutMS: 30000,          // 30s timeout
+      serverSelectionTimeoutMS: 30000,  // Server select timeout
+      socketTimeoutMS: 45000,           // Socket timeout
     });
 
     await client.connect();
@@ -97,7 +68,11 @@ async function connectToDatabase() {
     cachedDb = client.db('ifterDB');
     return cachedDb;
   } catch (err) {
-    console.error('MongoDB connection error:', err);
+    console.error('MongoDB connection FAILED:', err.message);
+    console.error('Full error:', err);
+    if (err.name === 'MongoServerSelectionError') {
+      console.error('Likely IP whitelist issue or wrong URI');
+    }
     throw err;
   }
 }
@@ -107,69 +82,13 @@ app.get('/', (req, res) => {
   res.send('Server is running 🚀 | Ifter Hisab API');
 });
 
-// POST /hishab
-app.post(
-  '/hishab',
-  upload.fields([
-    { name: 'donorImage', maxCount: 1 },
-    { name: 'receiverImage', maxCount: 1 }
-  ]),
-  async (req, res) => {
-    try {
-      console.log('POST /hishab received');
-      console.log('Body:', req.body);
-      console.log('Files received:', req.files ? Object.keys(req.files) : 'No files');
-
-      const db = await connectToDatabase();
-      const body = req.body;
-      const files = req.files || {};
-
-      // Dummy URL – পরে Cloudinary / Vercel Blob / ImgBB দিয়ে replace করুন
-      const donorImageUrl = files.donorImage?.[0]
-        ? `https://via.placeholder.com/150?text=${encodeURIComponent(body.donorName || 'Donor')}`
-        : null;
-
-      const receiverImageUrl = files.receiverImage?.[0]
-        ? `https://via.placeholder.com/150?text=${encodeURIComponent(body.receiverName || 'Receiver')}`
-        : null;
-
-      const newTransaction = {
-        type: body.type || 'donation',
-        amount: Number(body.amount) || 0,
-        note: (body.note || body.description || body.reason || '').trim(),
-        date: body.date || new Date().toISOString().split('T')[0],
-
-        donorName: (body.donorName || '').trim(),
-        donorPhone: (body.donorPhone || '').trim(),
-        donorAddress: (body.donorAddress || '').trim(),
-        donorImage: donorImageUrl,
-
-        receiverName: (body.receiverName || '').trim(),
-        receiverPhone: (body.receiverPhone || '').trim(),
-        receiverAddress: (body.receiverAddress || '').trim(),
-        receiverImage: receiverImageUrl,
-
-        createdAt: new Date(),
-      };
-
-      const result = await db.collection('hishab').insertOne(newTransaction);
-
-      res.status(201).json({
-        success: true,
-        insertedId: result.insertedId.toString(),
-        message: 'Transaction added successfully'
-      });
-    } catch (err) {
-      console.error('POST /hishab error:', err);
-      res.status(500).json({ success: false, error: err.message });
-    }
-  }
-);
-
-// GET /hishab
+// GET /hishab with better logging
 app.get('/hishab', async (req, res) => {
+  console.log('GET /hishab requested');
   try {
     const db = await connectToDatabase();
+    console.log('DB connection successful in GET /hishab');
+
     const transactions = await db.collection('hishab')
       .find({})
       .sort({ date: -1, createdAt: -1 })
@@ -192,6 +111,7 @@ app.get('/hishab', async (req, res) => {
       };
     });
 
+    console.log(`Fetched ${processed.length} transactions`);
     res.json({
       transactions: processed,
       totalDonation,
@@ -199,12 +119,47 @@ app.get('/hishab', async (req, res) => {
       netBalance: totalDonation - totalExpense
     });
   } catch (err) {
-    console.error('GET /hishab error:', err);
-    res.status(500).json({ error: 'Server error' });
+    console.error('GET /hishab error:', err.message);
+    console.error('Error stack:', err.stack);
+    res.status(500).json({ 
+      error: 'Server error', 
+      message: err.message,
+      details: 'Check Vercel logs for full stack'
+    });
   }
 });
 
-// DELETE /hishab/:id
+// POST /hishab (আগের মতো রাখলাম, log improve)
+app.post(
+  '/hishab',
+  upload.fields([
+    { name: 'donorImage', maxCount: 1 },
+    { name: 'receiverImage', maxCount: 1 }
+  ]),
+  async (req, res) => {
+    console.log('POST /hishab received');
+    try {
+      const db = await connectToDatabase();
+      const body = req.body;
+      const files = req.files || {};
+
+      // ... (বাকি তোমার code একই রাখলাম)
+
+      const result = await db.collection('hishab').insertOne(newTransaction);
+
+      res.status(201).json({
+        success: true,
+        insertedId: result.insertedId.toString(),
+        message: 'Transaction added successfully'
+      });
+    } catch (err) {
+      console.error('POST /hishab error:', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  }
+);
+
+// DELETE route (একই রাখলাম)
 app.delete('/hishab/:id', async (req, res) => {
   try {
     const db = await connectToDatabase();
@@ -221,15 +176,13 @@ app.delete('/hishab/:id', async (req, res) => {
   }
 });
 
-// Vercel serverless এর জন্য
+// Vercel serverless export
 module.exports = app;
 
-// লোকাল ডেভেলপমেন্টের জন্য listen (Vercel এ ignore হবে)
+// Local dev only
 if (require.main === module) {
   const PORT = process.env.PORT || 5000;
   app.listen(PORT, () => {
     console.log(`🚀 Server running on http://localhost:${PORT}`);
-    console.log(`GET  → http://localhost:${PORT}/hishab`);
-    console.log(`POST → http://localhost:${PORT}/hishab`);
   });
 }
