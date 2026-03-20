@@ -7,17 +7,19 @@ const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const app = express();
 
 // Middleware
-app.use(cors({
-  origin: [
-    'http://localhost:3000',           // Next.js local
-    'http://localhost:5000',           // যদি আলাদা পোর্টে frontend চলে
-    'https://hishabi-api.vercel.app', // production frontend domain (পরিবর্তন করুন)
-    '*'                                // dev-এর জন্য temporarily সব allow (পরে restrict করুন)
-  ],
-  methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type'],
-  credentials: true
-}));
+// app.use(cors({
+//   origin: [
+//     'http://localhost:3000',           
+//     'http://localhost:5000',           
+//     'https://hishabi-api.vercel.app', 
+//     '*'                               
+//   ],
+//   methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+//   allowedHeaders: ['Content-Type'],
+//   credentials: true
+// }));
+
+app.use(cors)
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
