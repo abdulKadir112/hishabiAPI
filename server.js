@@ -19,7 +19,40 @@ const app = express();
 //   credentials: true
 // }));
 
-app.use(cors)
+const cors = require('cors');
+
+// ... অন্য import
+
+// CORS setup – dynamic origin + OPTIONS handle
+app.use(cors({
+  origin: function (origin, callback) {
+    // Allowed origins – তোমার frontend URL + local
+    const allowed = [
+      'http://localhost:3000',
+      'http://localhost:5000',  // যদি লাগে
+      'https://hishabi-frontend.vercel.app',  // তোমার actual frontend domain (vercel.app নাম চেক করো)
+      // preview branches-এর জন্য: /.*\.vercel\.app$/  wildcard চাইলে regex দিতে পারো
+    ];
+
+    if (!origin || allowed.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  methods: ['GET', 'POST', 'DELETE', 'OPTIONS', 'PUT', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true,
+  optionsSuccessStatus: 200  // legacy browsers-এর জন্য
+}));
+
+// Explicitly handle OPTIONS for all routes (Vercel-এ খুব দরকার)
+// app.options('*', cors());  // এটা অবশ্যই রাখো
+// তোমার app.use(cors(...)) এর পরে, routes-এর আগে
+app.options('*', (req, res) => {
+  res.status(200).end();
+});
+
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
