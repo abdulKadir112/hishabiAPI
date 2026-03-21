@@ -1,141 +1,174 @@
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
-const { MongoClient, ObjectId, ServerApiVersion } = require('mongodb');
+const path = require('path');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 
 const app = express();
 
-// ✅ CORS (Production ready)
+// CORS setup
 app.use(cors({
   origin: '*',
-  methods: ['GET', 'POST', 'DELETE', 'PUT'],
+  methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type'],
+  credentials: true
 }));
 
-// ✅ Body parser
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// ✅ Multer
-const upload = multer({ storage: multer.memoryStorage() });
+// Multer setup
+const storage = multer.memoryStorage();
+const upload = multer({
+  storage: storage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = ['.jpg', '.jpeg', '.png', '.webp'];
+    if (allowed.includes(path.extname(file.originalname).toLowerCase())) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only images allowed'), false);
+    }
+  },
+});
 
-// ✅ MongoDB
-const uri = process.env.MONGODB_URI;
+// MongoDB
+const uri = process.env.MONGODB_URI || "mongodb+srv://ifter:ifter2026@ifter1.e6wwged.mongodb.net/ifterDB?retryWrites=true&w=majority";
 let cachedDb = null;
 
-async function connectDB() {
+async function connectToDatabase() {
   if (cachedDb) return cachedDb;
 
   const client = new MongoClient(uri, {
-    serverApi: {
-      version: ServerApiVersion.v1,
-      strict: true,
-      deprecationErrors: true,
-    },
+    serverApi: { version: ServerApiVersion.v1, strict: true, deprecationErrors: true },
+    connectTimeoutMS: 30000,
+    serverSelectionTimeoutMS: 30000,
   });
 
   await client.connect();
   cachedDb = client.db('ifterDB');
-  console.log("MongoDB Connected ✅");
   return cachedDb;
 }
 
-// ================= ROUTES =================
+// Routes
+app.get('/', (req, res) => res.send('Server is running'));
 
-// Root
-app.get('/', (req, res) => {
-  res.send('API running 🚀');
-});
+app.post(
+  '/hishab',
+  upload.fields([
+    { name: 'donorImage', maxCount: 1 },
+    { name: 'receiverImage', maxCount: 1 }
+  ]),
+  async (req, res) => {
+    console.log('POST /hishab received');
+    console.log('Body:', req.body);
+    console.log('Files keys:', req.files ? Object.keys(req.files) : 'No files');
 
-// ✅ GET all
+    try {
+      const db = await connectToDatabase();
+      const body = req.body || {};
+
+      // Safe parsing
+      const amount = Number(body.amount) || 0;
+      if (amount <= 0) {
+        return res.status(400).json({ success: false, error: 'Valid amount required' });
+      }
+
+      const newTransaction = {
+        type: body.type || 'donation',
+        amount: amount,
+        note: (body.note || body.reason || body.description || '').trim(),
+        date: body.date || new Date().toISOString().split('T')[0],
+
+        donorName: (body.donorName || '').trim(),
+        donorPhone: (body.donorPhone || '').trim(),
+        donorAddress: (body.donorAddress || '').trim(),
+        donorImage: null, // placeholder - later add real upload
+
+        receiverName: (body.receiverName || '').trim(),
+        receiverPhone: (body.receiverPhone || '').trim(),
+        receiverAddress: (body.receiverAddress || '').trim(),
+        receiverImage: null,
+
+        createdAt: new Date(),
+      };
+
+      console.log('newTransaction ready:', newTransaction);
+
+      const result = await db.collection('hishab').insertOne(newTransaction);
+
+      res.status(201).json({
+        success: true,
+        insertedId: result.insertedId.toString(),
+        message: 'Transaction added successfully'
+      });
+    } catch (err) {
+      console.error('POST /hishab ERROR:', err.message);
+      console.error('Full error:', err.stack);
+      res.status(500).json({ 
+        success: false, 
+        error: err.message || 'Server error during insertion' 
+      });
+    }
+  }
+);
+
+// GET all
 app.get('/hishab', async (req, res) => {
   try {
-    const db = await connectDB();
-
-    const data = await db.collection('hishab')
+    const db = await connectToDatabase();
+    const transactions = await db.collection('hishab')
       .find({})
-      .sort({ createdAt: -1 })
+      .sort({ date: -1, createdAt: -1 })
       .toArray();
 
-    res.json(data);
+    let totalDonation = 0;
+    let totalExpense = 0;
+
+    const processed = transactions.map(t => {
+      const amt = Number(t.amount) || 0;
+      if (t.type === 'donation') totalDonation += amt;
+      if (t.type === 'expense') totalExpense += amt;
+
+      return {
+        ...t,
+        _id: t._id.toString(),
+        amount: amt,
+        note: t.note || '',
+      };
+    });
+
+    res.json({
+      transactions: processed,
+      totalDonation,
+      totalExpense,
+      netBalance: totalDonation - totalExpense
+    });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('GET /hishab error:', err);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
-// ✅ POST
-app.post('/hishab', upload.none(), async (req, res) => {
+// DELETE
+app.delete('/hishab/:id', async (req, res) => {
   try {
-    const db = await connectDB();
-    const body = req.body;
+    const db = await connectToDatabase();
+    const result = await db.collection('hishab').deleteOne({ _id: new ObjectId(req.params.id) });
 
-    const newTransaction = {
-      type: body.type,
-      amount: Number(body.amount) || 0,
-      note: body.note || '',
-      donorName: body.donorName || '',
-      donorPhone: body.donorPhone || '',
-      donorAddress: body.donorAddress || '',
-      receiverName: body.receiverName || '',
-      receiverPhone: body.receiverPhone || '',
-      receiverAddress: body.receiverAddress || '',
-      createdAt: new Date(),
-    };
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ success: false, message: 'Not found' });
+    }
 
-    const result = await db.collection('hishab').insertOne(newTransaction);
-
-    res.json({
-      success: true,
-      id: result.insertedId
-    });
-
+    res.json({ success: true, message: 'Deleted' });
   } catch (err) {
-    console.error(err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// ✅ DELETE
-app.delete('/hishab/:id', async (req, res) => {
-  try {
-    const db = await connectDB();
+module.exports = app;
 
-    await db.collection('hishab').deleteOne({
-      _id: new ObjectId(req.params.id)
-    });
-
-    res.json({ success: true });
-
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ✅ UPDATE
-app.put('/hishab/:id', upload.none(), async (req, res) => {
-  try {
-    const db = await connectDB();
-    const body = req.body;
-
-    const updated = {
-      type: body.type,
-      amount: Number(body.amount) || 0,
-      note: body.note || '',
-      donorName: body.donorName || '',
-      receiverName: body.receiverName || '',
-    };
-
-    await db.collection('hishab').updateOne(
-      { _id: new ObjectId(req.params.id) },
-      { $set: updated }
-    );
-
-    res.json({ success: true });
-
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ================= START =================
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log("Server running 🚀"));
+if (require.main === module) {
+  const PORT = process.env.PORT || 5000;
+  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+}
